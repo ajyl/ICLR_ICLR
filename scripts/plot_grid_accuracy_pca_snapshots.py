@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import torch
 
@@ -20,7 +21,31 @@ import utils
 from scripts import get_activations
 
 
-DEFAULT_TIMESTEPS = [10, 100, 400]
+#DEFAULT_TIMESTEPS = [5, 10, 100, 400]
+DEFAULT_TIMESTEPS = [5, 30, 105, 402]
+
+PAPER_STYLE = {
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.labelsize": 13,
+    "axes.titlesize": 13,
+    "axes.linewidth": 0.6,
+    "xtick.labelsize": 10.5,
+    "ytick.labelsize": 10.5,
+    "xtick.major.width": 0.6,
+    "ytick.major.width": 0.6,
+    "xtick.minor.width": 0.4,
+    "ytick.minor.width": 0.4,
+    "legend.fontsize": 7,
+    "lines.linewidth": 1.25,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+}
+
+ACCURACY_COLOR = "#0072B2"
+MARKER_EDGE_COLOR = "#004B78"
+GRAPH_EDGE_COLOR = "0.25"
 
 MODEL_NAME_BY_SIZE = {
     "1B": "meta-llama/Llama-3.2-1B",
@@ -34,6 +59,24 @@ N_LAYERS_BY_SIZE = {
     "70B": 80,
 }
 
+NODE_COLORS = [
+    "#d60001",
+    "#028700",
+    "#b500ff",
+    "#05abc6",
+    "#98fe02",
+    "#ffa632",
+    "#ff00ff",
+    "#78525e",
+    "#01fccf",
+    "#aea4ff",
+    "#8aa17a",
+    "#9a6901",
+    "#366962",
+    "#d2008c",
+    "#0000ff",
+    "#f1c232",
+]
 
 def get_default_layers_to_save(model_size, required_layer):
     if model_size == "1B":
@@ -271,7 +314,8 @@ def get_edges(adjacency):
 
 def get_colors(n_classes):
     cmap = plt.get_cmap("tab20")
-    return [cmap(i % cmap.N) for i in range(n_classes)]
+    return NODE_COLORS[:n_classes]
+    #return [cmap(i % cmap.N) for i in range(n_classes)]
 
 
 def plot_pca_snapshot(ax, points, edges, component_1, component_2, colors):
@@ -279,9 +323,9 @@ def plot_pca_snapshot(ax, points, edges, component_1, component_2, colors):
         ax.plot(
             [points[i, component_1], points[j, component_1]],
             [points[i, component_2], points[j, component_2]],
-            color="0.15",
+            color=GRAPH_EDGE_COLOR,
             lw=0.8,
-            alpha=0.75,
+            alpha=0.8,
             zorder=1,
         )
 
@@ -291,15 +335,45 @@ def plot_pca_snapshot(ax, points, edges, component_1, component_2, colors):
         c=colors,
         s=32,
         edgecolors="white",
-        linewidths=0.5,
+        linewidths=0.35,
         zorder=2,
     )
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_aspect("equal", adjustable="datalim")
+    ax.set_facecolor("0.995")
     for spine in ax.spines.values():
-        spine.set_color("0.35")
-        spine.set_linewidth(0.8)
+        spine.set_color("0.55")
+        spine.set_linewidth(0.55)
+
+
+def format_accuracy_tick(value, _pos):
+    if abs(value - round(value)) < 1e-8:
+        return str(int(round(value)))
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def format_accuracy_axis(ax, args):
+    ax.set_xlabel("Token Position (Log-Scale)")
+    ax.set_ylabel("Task Accuracy")
+    ax.set_xscale(args.xscale)
+    ax.set_ylim(-0.03, 1.03)
+    ax.set_yticks(np.linspace(0, 1, 5))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(format_accuracy_tick))
+    ax.grid(True, axis="y", color="0.90", linewidth=0.5)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="both", which="major", length=3.0, pad=2)
+    ax.tick_params(axis="both", which="minor", length=1.8)
+
+    if args.xscale == "log":
+        ax.xaxis.set_major_locator(mticker.LogLocator(base=10))
+        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    else:
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=5, integer=True))
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
 
 def x_to_axes_fraction(x, xlim, xscale):
@@ -338,6 +412,29 @@ def get_inset_lefts(timesteps, ax, width, xscale):
     return lefts
 
 
+def get_inset_left_positions(args, ax, width):
+    if args.inset_lefts is None:
+        return get_inset_lefts(args.timesteps, ax, width, args.xscale)
+    if len(args.inset_lefts) != len(args.timesteps):
+        raise ValueError(
+            "--inset_lefts must provide one value per timestep. "
+            f"Got {len(args.inset_lefts)} left positions for "
+            f"{len(args.timesteps)} timesteps."
+        )
+    return args.inset_lefts
+
+
+def get_inset_bottoms(args):
+    if args.inset_bottoms is None:
+        return [args.inset_bottom] * len(args.timesteps)
+    if len(args.inset_bottoms) != len(args.timesteps):
+        raise ValueError(
+            "--inset_bottoms must provide one value per timestep. "
+            f"Got {len(args.inset_bottoms)} bottoms for {len(args.timesteps)} timesteps."
+        )
+    return args.inset_bottoms
+
+
 def plot_accuracy_with_snapshots(
     output_path,
     config,
@@ -368,64 +465,82 @@ def plot_accuracy_with_snapshots(
     edges = get_edges(adjacency)
     colors = get_colors(next(iter(projected.values())).shape[0])
 
-    fig, ax = plt.subplots(figsize=(10.5, 5.5))
-    ax.plot(xs, accuracy, color="#2f8f83", lw=2.2, label="ICL task accuracy")
-    ax.set_xlabel("Token timestep")
-    ax.set_ylabel("ICL task accuracy")
-    ax.set_xscale(args.xscale)
-    ax.grid(True, axis="both", color="0.88", linewidth=0.8)
-    ax.set_title(f"Layer {args.layer} grid PCA snapshots over ICL accuracy")
-    ax.legend(loc="lower right", frameon=False)
+    with plt.rc_context(PAPER_STYLE):
+        fig, ax = plt.subplots(figsize=(args.fig_width, args.fig_height))
+        ax.plot(xs, accuracy, color=ACCURACY_COLOR, lw=1.35, label="Accuracy")
+        format_accuracy_axis(ax, args)
+        if args.title:
+            ax.set_title(args.title, pad=4)
+        if args.show_legend:
+            ax.legend(loc="lower right", frameon=False, handlelength=1.8)
 
-    y_values = np.interp(args.timesteps, xs, accuracy)
-    ax.scatter(
-        args.timesteps,
-        y_values,
-        color="#1f5f58",
-        s=28,
-        zorder=4,
-    )
-
-    for timestep in args.timesteps:
-        ax.axvline(timestep, color="0.55", lw=0.8, ls=":", alpha=0.6, zorder=0)
-
-    inset_width = args.inset_width
-    inset_height = args.inset_height
-    inset_bottom = args.inset_bottom
-    lefts = get_inset_lefts(args.timesteps, ax, inset_width, args.xscale)
-
-    for timestep, left, y_value in zip(args.timesteps, lefts, y_values):
-        inset = ax.inset_axes([left, inset_bottom, inset_width, inset_height])
-        plot_pca_snapshot(
-            inset,
-            projected[timestep],
-            edges,
-            args.component_1,
-            args.component_2,
-            colors,
-        )
-        inset.set_title(f"t={timestep}", fontsize=9, pad=2)
-
-        ax.annotate(
-            "",
-            xy=(timestep, y_value),
-            xycoords="data",
-            xytext=(left + inset_width / 2, inset_bottom),
-            textcoords=ax.transAxes,
-            arrowprops={
-                "arrowstyle": "-",
-                "color": "0.3",
-                "lw": 0.8,
-                "alpha": 0.7,
-            },
-            zorder=3,
+        y_values = np.interp(args.timesteps, xs, accuracy)
+        ax.scatter(
+            args.timesteps,
+            y_values,
+            facecolors="white",
+            edgecolors=MARKER_EDGE_COLOR,
+            linewidths=0.8,
+            s=20,
+            zorder=4,
         )
 
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-    fig.savefig(output_path, bbox_inches="tight", dpi=args.dpi)
-    plt.close(fig)
+        for timestep in args.timesteps:
+            ax.axvline(
+                timestep,
+                color="0.62",
+                lw=0.55,
+                ls=(0, (1.5, 2.0)),
+                alpha=0.75,
+                zorder=0,
+            )
+
+        inset_width = args.inset_width
+        inset_height = args.inset_height
+        inset_bottoms = get_inset_bottoms(args)
+        lefts = get_inset_left_positions(args, ax, inset_width)
+
+        for idx, (timestep, left, y_value, inset_bottom) in enumerate(zip(
+            args.timesteps, lefts, y_values, inset_bottoms
+        )):
+            width = inset_width
+            height = inset_height
+            if idx == len(lefts) - 1:
+                width *= 1.5
+                height *= 1.5
+                left = min(max(left - (width - inset_width) / 2, 0.0), 1.0 - width)
+
+            inset = ax.inset_axes([left, inset_bottom, width, height])
+            plot_pca_snapshot(
+                inset,
+                projected[timestep],
+                edges,
+                args.component_1,
+                args.component_2,
+                colors,
+            )
+            #inset.set_title(f"$t={timestep}$", fontsize=7, pad=1.5)
+
+            ax.annotate(
+                "",
+                xy=(timestep, y_value),
+                xycoords="data",
+                xytext=(left + width / 2, inset_bottom),
+                textcoords=ax.transAxes,
+                arrowprops={
+                    "arrowstyle": "-",
+                    "color": "0.35",
+                    "lw": 1.5,
+                    "alpha": 0.8,
+                },
+                zorder=3,
+            )
+
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        fig.savefig(output_path, bbox_inches="tight", dpi=args.dpi)
+        plt.close(fig)
 
 
 def parse_args():
@@ -489,9 +604,52 @@ def parse_args():
         help="Scale for the token timestep axis.",
     )
     parser.add_argument("--dpi", type=int, default=300)
-    parser.add_argument("--inset_width", type=float, default=0.22)
-    parser.add_argument("--inset_height", type=float, default=0.34)
+    parser.add_argument(
+        "--fig_width",
+        type=float,
+        default=5.2,
+        help="Figure width in inches. Default is suitable for a full-width paper figure.",
+    )
+    parser.add_argument(
+        "--fig_height",
+        type=float,
+        default=2.8,
+        help="Figure height in inches. Default is suitable for a full-width paper figure.",
+    )
+    parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="Optional title. Omitted by default because paper captions usually carry this text.",
+    )
+    parser.add_argument(
+        "--show_legend",
+        action="store_true",
+        help="Show the accuracy legend. Hidden by default to reduce paper-figure clutter.",
+    )
+    parser.add_argument("--inset_width", type=float, default=0.18)
+    parser.add_argument("--inset_height", type=float, default=0.30)
+    parser.add_argument(
+        "--inset_lefts",
+        type=float,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional per-snapshot inset left positions in main-axis coordinates, "
+            "in the same order as --timesteps. Overrides automatic x placement."
+        ),
+    )
     parser.add_argument("--inset_bottom", type=float, default=0.55)
+    parser.add_argument(
+        "--inset_bottoms",
+        type=float,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional per-snapshot inset bottom positions, in the same order as "
+            "--timesteps. Overrides --inset_bottom."
+        ),
+    )
 
     parser.add_argument("--model_family", type=str, default="llama")
     parser.add_argument("--model_size", choices=["1B", "8B", "70B"], default="1B")
